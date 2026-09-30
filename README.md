@@ -78,6 +78,9 @@ docker compose -f docker/docker-compose.yml run --rm benchmark pytest tests/ -v
       probe result from a model-free angle
       (`results/pilot_function_similarity.png`)
 - [ ] Dockerize end to end
+- [ ] Set up `run_benchmark` as a Nextflow pipeline (digest -> embed -> probe ->
+      evaluate -> report), one process per stage, containerised, with a
+      `test` profile
 - [ ] Extend to more organisms (Phase 2/3), then PTMs (Phase 3+)
 - [ ] Follow-ups suggested by the pilot: CLS-token pooling / embedding
       whitening (anisotropy fix), a larger ESM2 checkpoint, within- vs.

@@ -1,0 +1,23 @@
+# Organisms for the peptide function-similarity pilot (notebook 06).
+#
+# A handful of well-annotated, phylogenetically-spread bacterial reference
+# proteomes -- includes the Phase 1 organism (E. coli) plus three others, so
+# the pilot can test whether embeddings recover "same enzymatic function"
+# both within and *across* species (i.e. beyond simple sequence homology
+# within one genome).
+organisms:
+  - organism: "Escherichia coli str. K-12 substr. MG1655"
+    uniprot_proteome_id: "UP000000625"
+    reviewed_only: true
+
+  - organism: "Bacillus subtilis (strain 168)"
+    uniprot_proteome_id: "UP000001570"
+    reviewed_only: true
+
+  - organism: "Mycobacterium tuberculosis (strain ATCC 25618 / H37Rv)"
+    uniprot_proteome_id: "UP000001584"
+    reviewed_only: true
+
+  - organism: "Pseudomonas aeruginosa (strain ATCC 15692 / PAO1)"
+    uniprot_proteome_id: "UP000002438"
+    reviewed_only: true

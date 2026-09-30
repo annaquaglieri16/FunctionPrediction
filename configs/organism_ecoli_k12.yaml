@@ -1,0 +1,9 @@
+organism: "Escherichia coli str. K-12 substr. MG1655"
+uniprot_proteome_id: "UP000000625"
+taxon_id: 83333
+reviewed_only: true
+fasta_url: "https://rest.uniprot.org/uniprotkb/stream?query=proteome:UP000000625+AND+reviewed:true&format=fasta&compressed=false"
+notes: >
+  Small, extremely well-annotated bacterial reference proteome (~4,300
+  proteins). Chosen as the Phase 1 organism: fast to iterate on and
+  directly relevant to bacterial metaproteomics.

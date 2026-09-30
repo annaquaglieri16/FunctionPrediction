@@ -1,0 +1,18 @@
+# Digestion parameters. Cleavage rules themselves live in
+# src/plm_benchmark/digest.py (CLEAVAGE_RULES), which now sources its rule
+# table from pyteomics' expasy_rules -- so enzyme names here must use the
+# ExPASy spelling (hyphens/spaces, not underscores).
+default_enzyme: trypsin
+missed_cleavages: [0, 1, 2]
+min_length: 6
+max_length: 40
+
+enzymes_to_compare:
+  - trypsin
+  - lysc
+  - glutamyl endopeptidase           # Glu-C / V8
+  - chymotrypsin high specificity    # F/Y/W (low specificity also adds L/M/H)
+  - proteinase k                     # broad/non-specific -- closer to natural
+                                     # peptide fragments. ExPASy rule is
+                                     # [AEFILTVWY], slightly broader than the
+                                     # [AFILVWY] we used before.

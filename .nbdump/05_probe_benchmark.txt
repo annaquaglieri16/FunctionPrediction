@@ -1,0 +1,228 @@
+
+##### [0] MD
+# 05 — Probe benchmark: full-length vs. peptide embeddings
+
+The headline result: train a simple probe (logistic regression) on
+**full-length** protein embeddings to predict EC top-level class, then
+evaluate it on **peptide** embeddings from tryptic digestion of the
+same (held-out) proteins, binned by coverage. If PLM embeddings are
+robust to incompleteness, accuracy should stay high even at low
+coverage; if not, it should degrade as coverage drops.
+
+Unlike Notebook 03 (20-protein subsample), this digests and embeds
+peptides for the **whole labeled set** (~1,740 proteins, ~138k
+tryptic peptides) — the peptide-embedding step alone takes roughly
+an hour on CPU. Grab a coffee.
+
+Kernel: **Python (plm-benchmark)** (the repo `.venv`).
+
+##### [1] CODE
+import sys
+from pathlib import Path
+
+# notebooks/ lives one level below the repo root
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+SRC = REPO_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+print("repo root:", REPO_ROOT)
+
+##### [2] MD
+## Load the labeled dataset
+
+Reuses the proteome (Notebook 01) and EC labels (Notebook 04) already
+on disk — re-run those first if `data/raw/` doesn't have the FASTA
+and `_ec_labels.tsv` yet.
+
+##### [3] CODE
+import yaml
+
+from plm_benchmark.data_io import load_fasta
+from plm_benchmark.evaluate import build_fragment_dataset, build_labeled_dataset
+from plm_benchmark.labels import load_ec_labels
+
+config = yaml.safe_load((REPO_ROOT / "configs" / "organism_ecoli_k12.yaml").read_text())
+proteome_id = config["uniprot_proteome_id"]
+
+sequences = load_fasta(REPO_ROOT / "data" / "raw" / f"{proteome_id}.fasta")
+ec_labels = load_ec_labels(REPO_ROOT / "data" / "raw" / f"{proteome_id}_ec_labels.tsv")
+labeled_df = build_labeled_dataset(sequences, ec_labels)
+
+print(f"{len(labeled_df):,} labeled proteins")
+labeled_df["ec_class"].value_counts()
+
+##### [4] MD
+## Train/test split (protein-level)
+
+Split proteins first, *then* digest — every peptide inherits its
+parent's split. This is what keeps the fragment evaluation honest:
+the probe never sees embeddings (full-length *or* peptide) from a
+test protein during training.
+
+##### [5] CODE
+from sklearn.model_selection import train_test_split
+
+train_df, test_df = train_test_split(
+    labeled_df, test_size=0.2, stratify=labeled_df["ec_class"], random_state=0
+)
+print(f"train: {len(train_df)} proteins, test: {len(test_df)} proteins")
+
+##### [6] MD
+## Digest the whole labeled set
+
+All ~1,740 labeled proteins (not just a subsample), same enzyme /
+missed-cleavage / length settings as Notebooks 02-03
+(`configs/enzymes.yaml`). Each peptide inherits its parent protein's
+EC class and train/test split.
+
+##### [7] CODE
+import pandas as pd
+
+digest_config = yaml.safe_load((REPO_ROOT / "configs" / "enzymes.yaml").read_text())
+
+proteins_by_id = dict(zip(labeled_df["protein_id"], labeled_df["sequence"]))
+peptide_df = build_fragment_dataset(
+    proteins_by_id,
+    enzyme=digest_config["default_enzyme"],
+    missed_cleavages=max(digest_config["missed_cleavages"]),
+    min_length=digest_config["min_length"],
+    max_length=digest_config["max_length"],
+)
+
+ec_class_by_id = labeled_df.set_index("protein_id")["ec_class"]
+split_by_id = pd.Series("train", index=labeled_df["protein_id"])
+split_by_id.loc[test_df["protein_id"]] = "test"
+
+peptide_df["ec_class"] = peptide_df["protein_id"].map(ec_class_by_id)
+peptide_df["split"] = peptide_df["protein_id"].map(split_by_id)
+
+print(f"{len(peptide_df):,} peptides total")
+peptide_df["split"].value_counts()
+
+##### [8] MD
+## Embed full-length proteins
+
+All 1,740 labeled proteins — this is the cheap embedding step
+(seconds to a couple of minutes on CPU).
+
+##### [9] CODE
+from plm_benchmark.embed import DEFAULT_MODEL, embed_sequences
+
+X_full_all = embed_sequences(labeled_df["sequence"].tolist(), model_name=DEFAULT_MODEL)
+print("X_full_all shape:", X_full_all.shape)
+
+is_train = labeled_df["protein_id"].isin(train_df["protein_id"]).to_numpy()
+X_full_train, y_train = X_full_all[is_train], labeled_df.loc[is_train, "ec_class"]
+X_full_test, y_test = X_full_all[~is_train], labeled_df.loc[~is_train, "ec_class"]
+
+##### [10] MD
+## Embed peptides — the slow step
+
+~138k tryptic peptides from the whole labeled set. On CPU with the
+small ESM2 checkpoint this is roughly **~45-60 minutes** — run it
+once and cache the result (see the save cell below) rather than
+re-running on every kernel restart.
+
+##### [11] CODE
+X_pep_all = embed_sequences(peptide_df["peptide"].tolist(), model_name=DEFAULT_MODEL)
+print("X_pep_all shape:", X_pep_all.shape)
+
+##### [12] MD
+## Train the probe
+
+Logistic regression on full-length **train**-split embeddings only
+(`plm_benchmark.probe`, deliberately simple — the embeddings are the
+thing being benchmarked, not the probe).
+
+##### [13] CODE
+from plm_benchmark.probe import evaluate_probe, train_probe
+
+scaler, clf = train_probe(X_full_train, y_train)
+
+full_length_metrics = evaluate_probe(scaler, clf, X_full_test, y_test)
+print("full-length baseline (test proteins):", full_length_metrics)
+
+##### [14] MD
+## Fragment evaluation vs. coverage
+
+Only **test-split** peptides are scored here — evaluating on
+train-split peptides would leak label information the probe already
+saw via their parent protein's full-length embedding.
+
+##### [15] CODE
+test_peptides = peptide_df[peptide_df["split"] == "test"].reset_index(drop=True)
+X_pep_test = X_pep_all[(peptide_df["split"] == "test").to_numpy()]
+
+test_peptides["coverage_bucket"] = pd.cut(
+    test_peptides["coverage"], bins=[0, 0.1, 0.25, 0.5, 0.75, 1.0], include_lowest=True
+)
+
+bucket_rows = []
+for bucket, group in test_peptides.groupby("coverage_bucket", observed=True):
+    metrics = evaluate_probe(scaler, clf, X_pep_test[group.index], group["ec_class"])
+    bucket_rows.append({"coverage_bucket": str(bucket), **metrics})
+
+results_df = pd.DataFrame(bucket_rows)
+results_df
+
+##### [16] MD
+## Plot: accuracy vs. peptide coverage
+
+##### [17] CODE
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.plot(results_df["coverage_bucket"], results_df["accuracy"], marker="o", label="peptides")
+ax.axhline(
+    full_length_metrics["accuracy"], color="#E45756", linestyle="--",
+    label="full-length baseline",
+)
+ax.set_xlabel("peptide coverage bucket")
+ax.set_ylabel("probe accuracy (EC top-level class)")
+ax.set_ylim(0, 1)
+ax.legend()
+ax.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+plt.savefig(REPO_ROOT / "results" / "accuracy_vs_coverage.png", dpi=150)
+plt.show()
+
+##### [18] MD
+## Save
+
+Embeddings cached to `data/processed/` so the slow peptide-embedding
+step doesn't need re-running; metrics/plot to `results/` (neither
+directory is committed — see `.gitignore`).
+
+##### [19] CODE
+import numpy as np
+
+processed_dir = REPO_ROOT / "data" / "processed"
+results_dir = REPO_ROOT / "results"
+processed_dir.mkdir(parents=True, exist_ok=True)
+results_dir.mkdir(parents=True, exist_ok=True)
+
+labeled_df["split"] = "train"
+labeled_df.loc[labeled_df["protein_id"].isin(test_df["protein_id"]), "split"] = "test"
+
+np.save(processed_dir / "labeled_full_embeddings.npy", X_full_all)
+np.save(processed_dir / "labeled_peptide_embeddings.npy", X_pep_all)
+labeled_df.to_csv(processed_dir / "labeled_proteins_split.csv", index=False)
+peptide_df.to_csv(processed_dir / "labeled_peptide_digest.csv", index=False)
+results_df.to_csv(results_dir / "accuracy_vs_coverage.csv", index=False)
+
+print("full-length baseline:", full_length_metrics)
+print("saved embeddings, digest table, and results")
+
+##### [20] MD
+## Next
+
+- This is a single train/test split — repeat with a few different
+  `random_state` seeds (and/or k-fold at the protein level) to get
+  error bars on the accuracy-vs-coverage curve before drawing
+  conclusions from one run.
+- Compare against `plm_benchmark.fragments` (sliding-window / terminal
+  truncation) once digestion-based results look right, to separate
+  "short peptide" effects from "protease cleavage bias" effects.
+- Try other EC granularities (e.g. the first two digits) if top-level
+  class turns out too coarse to be an interesting probe target.

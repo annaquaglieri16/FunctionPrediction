@@ -1,0 +1,30 @@
+
+##### [0] CODE
+import sys
+from pathlib import Path
+
+# notebooks/ lives one level below the repo root
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+SRC = REPO_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+print("repo root:", REPO_ROOT)
+
+##### [1] CODE
+from pyteomics.parser import expasy_rules
+import pyteomics
+
+##### [2] CODE
+# Perform an in silico digestion on a protein sequence using the trypsin rule
+protein_sequence = "AAKPRAAKAAR"
+pyteomics.parser.cleave(protein_sequence, expasy_rules['trypsin'])
+# {'AAK', 'AAKPR', 'AAR'}
+
+##### [3] CODE
+expasy_rules['trypsin']
+
+##### [4] CODE
+from plm_benchmark.digest import digest
+
+digest(protein_sequence, missed_cleavages=0)

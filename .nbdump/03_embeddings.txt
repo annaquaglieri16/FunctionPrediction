@@ -1,0 +1,199 @@
+
+##### [0] MD
+# 03 — Embeddings
+
+Computes frozen ESM2 embeddings for *E. coli* K-12 proteins and for the
+tryptic peptides produced by `plm_benchmark.digest` (Notebook 02).
+
+Scope for now: enzymatic digestion only — `plm_benchmark.fragments`
+(sliding-window / terminal truncation) is intentionally excluded and
+will get its own pass once the digestion embeddings look right.
+
+Kernel: **Python (plm-benchmark)** (the repo `.venv`). Needs
+`requirements-ml.txt` (torch + transformers) installed.
+
+##### [1] CODE
+import sys
+from pathlib import Path
+
+# notebooks/ lives one level below the repo root
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+SRC = REPO_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+print("repo root:", REPO_ROOT)
+
+##### [2] MD
+## Load the proteome
+
+Reuses the FASTA fetched in `01_fetch_proteome.ipynb`; re-run that
+notebook first if `data/raw/<proteome_id>.fasta` isn't there yet.
+
+##### [3] CODE
+import yaml
+
+from plm_benchmark.data_io import load_fasta
+
+config = yaml.safe_load((REPO_ROOT / "configs" / "organism_ecoli_k12.yaml").read_text())
+proteome_id = config["uniprot_proteome_id"]
+fasta_path = REPO_ROOT / "data" / "raw" / f"{proteome_id}.fasta"
+
+sequences = load_fasta(fasta_path)
+print(f"{len(sequences):,} sequences loaded from {fasta_path.name}")
+
+##### [4] MD
+## Digest a subset of proteins
+
+Embedding the full ~4,300-protein proteome and all of its tryptic
+peptides is expensive to iterate on, so this notebook works on a small
+random subset. Bump `N_PROTEINS` (or drop the subsampling entirely)
+once the pipeline below looks right.
+
+Digestion parameters come from `configs/enzymes.yaml`, same as
+Notebook 02.
+
+##### [5] CODE
+import random
+
+from plm_benchmark.digest import digest
+
+digest_config = yaml.safe_load((REPO_ROOT / "configs" / "enzymes.yaml").read_text())
+
+N_PROTEINS = 20
+rng = random.Random(0)
+protein_ids = rng.sample(list(sequences), N_PROTEINS)
+proteins = {pid: sequences[pid] for pid in protein_ids}
+
+print(f"digesting {len(proteins)} proteins with {digest_config['default_enzyme']!r}")
+
+##### [6] CODE
+digest_config
+
+##### [7] CODE
+peptide_rows = []
+for protein_id, seq in proteins.items():
+    peptides = digest(
+        seq,
+        enzyme=digest_config["default_enzyme"],
+        missed_cleavages=max(digest_config["missed_cleavages"]),
+        min_length=digest_config["min_length"],
+        max_length=digest_config["max_length"],
+    )
+    for pep in peptides:
+        peptide_rows.append(
+            {
+                "protein_id": protein_id,
+                "peptide": pep.sequence,
+                "start": pep.start,
+                "end": pep.end,
+                "missed_cleavages": pep.missed_cleavages,
+                "protein_sequence": seq,
+                "coverage": len(pep) / len(seq),
+            }
+        )
+
+import pandas as pd
+
+peptide_df = pd.DataFrame(peptide_rows)
+print(f"{len(peptide_df):,} peptides from {len(proteins)} proteins")
+peptide_df.head()
+
+##### [8] CODE
+peptide_df[peptide_df['protein_id'] == "sp|P37750|WBBJ_ECOLI"].sort_values(["missed_cleavages","start"]).head()
+
+##### [9] MD
+## Compute embeddings
+
+`plm_benchmark.embed.embed_sequences` lazy-imports torch/transformers
+and mean-pools the last hidden state (masking out padding) into one
+fixed-length vector per sequence. Uses the default small ESM2
+checkpoint (`facebook/esm2_t12_35M_UR50D`); the first call downloads
+and caches the model weights.
+
+##### [10] CODE
+from plm_benchmark.embed import DEFAULT_MODEL, embed_sequences, _load_model
+
+print("model:", DEFAULT_MODEL)
+
+
+
+##### [11] MD
+### Full-length protein embeddings
+
+##### [12] CODE
+full_ids = list(proteins)
+full_seqs = [proteins[pid] for pid in full_ids]
+
+X_full = embed_sequences(full_seqs, model_name=DEFAULT_MODEL, pooling="mean")
+print("X_full shape:", X_full.shape)
+
+##### [13] MD
+### Peptide embeddings
+
+##### [14] CODE
+X_pep = embed_sequences(
+    peptide_df["peptide"].tolist(), model_name=DEFAULT_MODEL, pooling="mean"
+)
+print("X_pep shape:", X_pep.shape)
+
+##### [15] MD
+## Sanity check
+
+Cosine similarity between each peptide's embedding and its own parent
+protein's full-length embedding, vs. sequence coverage. Higher-coverage
+peptides (more missed cleavages, closer to full length) should tend to
+look more similar to the full protein.
+
+##### [16] CODE
+import numpy as np
+
+full_by_id = {pid: X_full[i] for i, pid in enumerate(full_ids)}
+
+
+def cosine_sim(a, b):
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+peptide_df["sim_to_parent"] = [
+    cosine_sim(X_pep[i], full_by_id[row.protein_id])
+    for i, row in enumerate(peptide_df.itertuples())
+]
+
+peptide_df[["coverage", "sim_to_parent"]].corr()
+
+##### [17] CODE
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.scatter(peptide_df["coverage"], peptide_df["sim_to_parent"], alpha=0.4, s=15)
+ax.set_xlabel("peptide coverage (fraction of parent length)")
+ax.set_ylabel("cosine sim to full-length embedding")
+ax.spines[["top", "right"]].set_visible(False)
+plt.show()
+
+##### [18] MD
+## Save embeddings
+
+Written to `data/processed/` (not committed — see `.gitignore`).
+
+##### [19] CODE
+processed_dir = REPO_ROOT / "data" / "processed"
+processed_dir.mkdir(parents=True, exist_ok=True)
+
+np.save(processed_dir / "full_protein_embeddings.npy", X_full)
+np.save(processed_dir / "peptide_embeddings.npy", X_pep)
+pd.Series(full_ids).to_csv(processed_dir / "full_protein_ids.csv", index=False, header=["protein_id"])
+peptide_df.to_csv(processed_dir / "peptide_digest.csv", index=False)
+
+print("saved to", processed_dir)
+
+##### [20] MD
+## Next
+
+- Scale `N_PROTEINS` up (or remove the subsampling) once this looks right.
+- `plm_benchmark.probe` trains/evaluates a probe on top of `X_full` given
+  labels (still TODO — see the Phase 1 checklist in README.md).
+- `plm_benchmark.fragments` (sliding-window / terminal truncation)
+  embeddings are deliberately out of scope here; add a follow-up
+  notebook once digestion-based results look right.

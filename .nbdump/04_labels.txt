@@ -1,0 +1,134 @@
+
+##### [0] MD
+# 04 — Labels (EC number)
+
+Fetches and parses the prediction target for the Phase 1 probe:
+**EC (Enzyme Commission) top-level class**, chosen over subcellular
+location / GO because it needs no free-text parsing and is a
+reasonably balanced 7-way classification problem.
+
+EC numbers only annotate enzymes, so this label covers ~40% of the
+*E. coli* proteome — non-enzymatic proteins are dropped, not
+mislabeled.
+
+Kernel: **Python (plm-benchmark)** (the repo `.venv`). Fetching needs
+network access.
+
+##### [1] CODE
+import sys
+from pathlib import Path
+
+# notebooks/ lives one level below the repo root
+REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+SRC = REPO_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+print("repo root:", REPO_ROOT)
+
+##### [2] MD
+## Load the proteome
+
+Reuses the FASTA fetched in `01_fetch_proteome.ipynb`; re-run that
+notebook first if `data/raw/<proteome_id>.fasta` isn't there yet.
+
+##### [3] CODE
+import yaml
+
+from plm_benchmark.data_io import load_fasta
+
+config = yaml.safe_load((REPO_ROOT / "configs" / "organism_ecoli_k12.yaml").read_text())
+proteome_id = config["uniprot_proteome_id"]
+fasta_path = REPO_ROOT / "data" / "raw" / f"{proteome_id}.fasta"
+
+sequences = load_fasta(fasta_path)
+print(f"{len(sequences):,} sequences loaded from {fasta_path.name}")
+
+##### [4] MD
+## Fetch EC labels
+
+Same skip-if-already-downloaded pattern as the FASTA fetch in
+Notebook 01 — delete the file (or set `force = True`) to re-download.
+
+##### [5] CODE
+from plm_benchmark.labels import fetch_ec_labels
+
+ec_labels_path = REPO_ROOT / "data" / "raw" / f"{proteome_id}_ec_labels.tsv"
+force = False
+
+if force or not ec_labels_path.exists():
+    ec_labels_path = fetch_ec_labels(
+        proteome_id=proteome_id,
+        out_path=ec_labels_path,
+        reviewed_only=config["reviewed_only"],
+    )
+    print("downloaded ->", ec_labels_path)
+else:
+    print("already present ->", ec_labels_path)
+
+##### [6] MD
+## Parse and join with sequences
+
+`load_ec_labels` keys on bare UniProt accession (e.g. `P00350`);
+`evaluate.build_labeled_dataset` extracts that accession from each
+FASTA header (`sp|P00350|...`) to join it with the sequence, and
+drops proteins with no EC number (non-enzymes).
+
+##### [7] CODE
+from plm_benchmark.evaluate import build_labeled_dataset
+from plm_benchmark.labels import EC_CLASS_NAMES, load_ec_labels
+
+ec_labels = load_ec_labels(ec_labels_path)
+print(f"{len(ec_labels):,} / {len(sequences):,} proteins have an EC number")
+
+labeled_df = build_labeled_dataset(sequences, ec_labels)
+labeled_df["ec_class_name"] = labeled_df["ec_class"].map(EC_CLASS_NAMES)
+labeled_df.head()
+
+##### [8] MD
+## Class balance
+
+Top-level EC class, across the labeled subset.
+
+##### [9] CODE
+import matplotlib.pyplot as plt
+
+counts = labeled_df["ec_class_name"].value_counts()
+
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.bar(counts.index, counts.values, color="#4C78A8")
+ax.set_ylabel("count")
+ax.set_title(f"EC top-level class — {len(labeled_df):,} labeled proteins")
+ax.tick_params(axis="x", rotation=30)
+ax.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+plt.show()
+
+counts
+
+##### [10] MD
+## Save
+
+Written to `data/processed/` (not committed — see `.gitignore`).
+This is the (protein, sequence, label) table the probe will train
+and evaluate against once full-proteome embeddings are computed.
+
+##### [11] CODE
+processed_dir = REPO_ROOT / "data" / "processed"
+processed_dir.mkdir(parents=True, exist_ok=True)
+
+out_path = processed_dir / "labeled_proteins.csv"
+labeled_df.to_csv(out_path, index=False)
+print("saved", len(labeled_df), "labeled proteins ->", out_path)
+
+##### [12] MD
+## Next
+
+- Embed the full labeled set (`labeled_df["sequence"]`) with
+  `plm_benchmark.embed.embed_sequences`, same as Notebook 03 but over
+  all ~1,700 labeled proteins instead of the 20-protein subsample.
+- `plm_benchmark.probe.train_probe` / `evaluate_probe` on those
+  embeddings against `ec_class` — the full-length-embedding baseline.
+- Then repeat on fragment/peptide embeddings to get the
+  accuracy-vs-coverage curve that's the headline result of this
+  benchmark.

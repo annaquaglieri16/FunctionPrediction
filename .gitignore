@@ -11,3 +11,6 @@ results/*
 .DS_Store
 *.egg-info/
 .ipynb_checkpoints/
+work/
+.nextflow/
+.nextflow.log*

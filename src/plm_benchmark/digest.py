@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+import pandas as pd
 
 from pyteomics.parser import expasy_rules
 
@@ -90,6 +91,39 @@ def digest(
             peptides[(start, end)] = Peptide(pep_seq, start, end, mc)
 
     return sorted(peptides.values(), key=lambda p: (p.start, p.end))
+
+
+def digest_proteome(
+    proteins: dict[str, str],
+    enzyme: str = "trypsin",
+    missed_cleavages: int = 2,
+    min_length: int = 6,
+    max_length: int = 40,
+) -> pd.DataFrame:
+    """Digest every protein and return a long table: one row per peptide,
+    with a back-reference to its parent protein and coverage fraction."""
+    rows = []
+    for protein_id, seq in proteins.items():
+        peptides = digest(
+            seq,
+            enzyme=enzyme,
+            missed_cleavages=missed_cleavages,
+            min_length=min_length,
+            max_length=max_length,
+        )
+        for pep in peptides:
+            rows.append(
+                {
+                    "protein_id": protein_id,
+                    "peptide": pep.sequence,
+                    "start": pep.start,
+                    "end": pep.end,
+                    "missed_cleavages": pep.missed_cleavages,
+                    "coverage": len(pep) / len(seq),
+                    "enzyme": enzyme,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def digest_multi_enzyme(

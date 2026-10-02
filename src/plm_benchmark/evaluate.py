@@ -44,7 +44,7 @@ def build_labeled_dataset(
         )
     return pd.DataFrame(rows)
 
-
+# same as digest proteome in digest.py
 def build_fragment_dataset(
     proteins: dict[str, str],
     enzyme: str = "trypsin",
